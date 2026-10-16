@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="trial-version" content="1">
+<title>Pages trial</title>
+<style>
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:#fff;color:#111}
+main{max-width:960px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.muted{color:#666;font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+button{font:inherit;padding:8px 12px;border:1px solid #bbb;border-radius:6px;background:#f6f6f6;cursor:pointer}
+.table-wrap{overflow-x:auto;border:1px solid #ddd;border-radius:6px;max-height:260px}
+table{border-collapse:collapse;min-width:640px;width:100%;font-size:13px}
+th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left;white-space:nowrap}
+.wrap{overflow-wrap:anywhere}
+#log div{border-top:1px solid #eee;padding:6px 0;font:12px/1.4 ui-monospace,Menlo,monospace;overflow-wrap:anywhere;white-space:pre-wrap}
+</style></head><body><main>
+<h1>Pages trial <span class="muted">· page version <b id="pv">1</b></span></h1>
+<p class="muted">Throwaway test page for static hosting. Generic sample data, no real content. Will be deleted.</p>
+<p>Data file: version <b id="dv-default">…</b> (default fetch) · <b id="dv-nocache">…</b> (no-cache fetch) · <span id="rows">…</span> rows</p>
+<p class="wrap">User ID: <code id="uid">…</code> <span id="uid-mode" class="muted"></span></p>
+<div class="row">
+  <button id="b-echo">Call webhook</button>
+  <button id="b-err400">JSON error (400)</button>
+  <button id="b-err200">JSON error (200)</button>
+  <button id="b-404">Unknown path</button>
+</div>
+<div class="table-wrap" id="tw"><table><thead><tr><th>ID</th><th>Group</th><th>Value A</th><th>Value B</th><th>Note</th><th>Source link</th></tr></thead><tbody id="tb"></tbody></table></div>
+<p class="wrap muted">Long unbroken string (wrap test): https://example.org/a/very/long/path/without/any/spaces/that/should/wrap/on/a/phone/document-0000000000000000.pdf#page=12</p>
+<div id="log"></div>
+</main>
+<script>
+const BASE = "https://guille81.app.n8n.cloud/webhook/fif-pretest";
+const MSG = { unreachable: "Can't reach the AI right now.", bad_answer: "Something went wrong with this answer." };
+const $ = id => document.getElementById(id);
+const results = {};
+function log(label, obj) {
+  results[label] = obj;
+  const line = `[PT] ${label}: ${JSON.stringify(obj)}`;
+  console.log(line);
+  const d = document.createElement("div"); d.textContent = line; $("log").prepend(d);
+  return obj;
+}
+
+// Random user ID kept in the browser; a per-visit ID if storage is blocked.
+function getUserId() {
+  const fresh = () => crypto.randomUUID();
+  try {
+    let id = localStorage.getItem("trial_uid");
+    if (id) return { id, mode: "stored (reused)" };
+    id = fresh(); localStorage.setItem("trial_uid", id);
+    return { id, mode: "stored (new)" };
+  } catch (e) {
+    return { id: fresh(), mode: `per-visit (${e.name})` };
+  }
+}
+const U = getUserId();
+$("uid").textContent = U.id; $("uid-mode").textContent = U.mode;
+log("user_id", U);
+
+// Static data file next to the page, relative fetch: default cache mode vs no-cache.
+const dataReady = (async () => {
+  const t0 = performance.now();
+  try {
+    const [a, b] = await Promise.all([fetch("data.json"), fetch("data.json", { cache: "no-cache" })]);
+    const [ja, jb] = await Promise.all([a.json(), b.json()]);
+    $("dv-default").textContent = ja.version; $("dv-nocache").textContent = jb.version; $("rows").textContent = jb.items.length;
+    $("tb").innerHTML = jb.items.map(r => `<tr><td>${r.id}</td><td>${r.group}</td><td>${r.a}</td><td>${r.b}</td><td>${r.note}</td><td>https://example.org/doc.pdf#page=${r.b | 0}</td></tr>`).join("");
+    return log("data", { default_version: ja.version, nocache_version: jb.version, rows: jb.items.length,
+                         ms: Math.round(performance.now() - t0), resolved_url: a.url });
+  } catch (e) {
+    return log("data", { js_error: `${e.name}: ${e.message}` });
+  }
+})();
+
+async function call(label, path, body) {
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`${BASE}/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const txt = await r.text(); let j = null; try { j = JSON.parse(txt); } catch (e) {}
+    const shown = j && j.error ? (MSG[j.error.code] || MSG.bad_answer) : (r.ok && j ? "answer" : MSG.unreachable);
+    return log(label, { http: r.status, ms: Math.round(performance.now() - t0), json_body: !!j,
+                        origin_seen_by_n8n: j ? j.origin : null, error_code: (j && j.error && j.error.code) || null, shown });
+  } catch (e) {
+    return log(label, { ms: Math.round(performance.now() - t0), js_error: `${e.name}: ${e.message}`, shown: MSG.unreachable });
+  }
+}
+const tests = {
+  echo: () => call("echo", "pages-echo", { user_id: U.id, conversation_id: "c-1", message: "hello from Pages" }),
+  error_400: () => call("error_400", "pages-echo", { force_error: true, error_status: 400 }),
+  error_200: () => call("error_200", "pages-echo", { force_error: true, error_status: 200 }),
+  unknown_path: () => call("unknown_path", "no-such-path-xyz", {})
+};
+$("b-echo").onclick = tests.echo; $("b-err400").onclick = tests.error_400;
+$("b-err200").onclick = tests.error_200; $("b-404").onclick = tests.unknown_path;
+
+// Hooks for the headless test driver.
+window.runTests = async () => { await dataReady; for (const k of Object.keys(tests)) await tests[k](); return results; };
+window.pageState = async () => { await dataReady; return { page_version: $("pv").textContent, ...results }; };
+window.layoutCheck = () => {
+  const m = document.querySelector("main").getBoundingClientRect(), de = document.documentElement, tw = $("tw");
+  return { innerWidth, clientWidth: de.clientWidth, scrollWidth: de.scrollWidth, page_scrolls_sideways: de.scrollWidth > de.clientWidth,
+           gutter_left: Math.round(m.left), gutter_right: Math.round(de.clientWidth - m.right),
+           table_scrolls_inside_its_box: tw.scrollWidth > tw.clientWidth };
+};
+</script>
+</body></html>
